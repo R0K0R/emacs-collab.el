@@ -238,6 +238,7 @@ class Bridge:
                   "op": op})
         else:
             self.write_atomic(path, text)
+            send({"t": "file_event", "op": "change", "path": path})
 
     def on_x_test_text(self, m):
         path = m.get("path")
