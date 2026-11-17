@@ -1,6 +1,6 @@
 # TeXlyre collaboration protocol, for a non-browser bridge
 
-Sources: upstream TeXlyre v0.11.0 (the version in /home/r0k0r/flakes/texlyre/texlyre.nix, cloned to scratchpad `tl/`, paths below are repo-relative), y-webrtc v10.3.0 (`yjs/y-webrtc`, `src/y-webrtc.js`, `src/crypto.js`, `bin/server.js`), y-codemirror.next 0.3.5. The Nix store `result` holds only the built `dist/` (minified), so I read source.
+Sources: upstream TeXlyre v0.11.0 (paths below are relative to its repository), y-webrtc v10.3.0 (`yjs/y-webrtc`, `src/y-webrtc.js`, `src/crypto.js`, `bin/server.js`), y-codemirror.next 0.3.5. The Nix store `result` holds only the built `dist/` (minified), so I read source.
 
 ## 1. Room model
 
