@@ -666,5 +666,12 @@ With NO-CLOSE (used internally when rebuilding), keep the windows."
         (switch-to-buffer (get-scratch-buffer-create)))
       (message "Workspace closed: %s" (abbreviate-file-name root)))))
 
+;; The role marks must survive a workspace switch: Doom's workspaces (and
+;; `window-state-get'/`window-state-put' generally) keep a window parameter
+;; only if it is listed here.  Without it, coming back to the workspace left
+;; no window marked as the editor.
+(dolist (param '(emacs-collab-role emacs-collab-layout-root))
+  (setf (alist-get param window-persistent-parameters) 'writable))
+
 (provide 'emacs-collab-layout)
 ;;; emacs-collab-layout.el ends here

@@ -735,5 +735,19 @@ No edit can then be made that the `doc' reset would have to discard."
   (when-let* ((conn (or emacs-collab--conn (car emacs-collab--connections))))
     (emacs-collab--send conn (list :t "chat" :text text))))
 
+(defun emacs-collab-file-create (conn path &optional text)
+  "Ask the bridge of CONN to create PATH (project-relative) with TEXT.
+The bridge answers with a `file_event' once the service has it."
+  (emacs-collab--send conn (append (list :t "file" :op "create" :path path)
+                                   (and text (list :text text)))))
+
+(defun emacs-collab-file-rename (conn path to)
+  "Ask the bridge of CONN to rename PATH to TO (both project-relative)."
+  (emacs-collab--send conn (list :t "file" :op "rename" :path path :to to)))
+
+(defun emacs-collab-file-delete (conn path)
+  "Ask the bridge of CONN to delete PATH (project-relative)."
+  (emacs-collab--send conn (list :t "file" :op "delete" :path path)))
+
 (provide 'emacs-collab)
 ;;; emacs-collab.el ends here
