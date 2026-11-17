@@ -12,9 +12,14 @@
 (defvar emacs-collab-test--texts (make-hash-table :test 'equal)
   "path -> last `x-test-text' reply.")
 
+(defvar emacs-collab-test--pending (make-hash-table :test 'equal)
+  "path -> last `x-test-pending' count.")
+
 (defun emacs-collab-test--collect (_conn msg)
   (when (equal (alist-get 't msg) "x-test-text")
-    (puthash (alist-get 'path msg) (alist-get 'text msg) emacs-collab-test--texts)))
+    (puthash (alist-get 'path msg) (alist-get 'text msg) emacs-collab-test--texts))
+  (when (equal (alist-get 't msg) "x-test-pending")
+    (puthash (alist-get 'path msg) (alist-get 'count msg) emacs-collab-test--pending)))
 
 (defun emacs-collab-test--wait (pred &optional timeout)
   "Run process output until PRED is non-nil; fail after TIMEOUT seconds."
@@ -77,6 +82,14 @@ PRE-FORM runs before connecting (e.g. to visit files)."
     (emacs-collab-test--wait (lambda () (emacs-collab-test--synced-p buf)))
     (ignore conn)
     buf))
+
+(defun emacs-collab-test--bridge-pending (conn path)
+  "Ask the bridge how many of its edits for PATH are unacknowledged."
+  (remhash path emacs-collab-test--pending)
+  (emacs-collab--send conn (list :t "x-test-pending" :path path))
+  (emacs-collab-test--wait
+   (lambda () (numberp (gethash path emacs-collab-test--pending))))
+  (gethash path emacs-collab-test--pending))
 
 (defun emacs-collab-test--settle (conn path buf)
   "Wait for quiescence; assert buffer == bridge text; return it."
@@ -141,6 +154,76 @@ PRE-FORM runs before connecting (e.g. to visit files)."
       (emacs-collab-test--wait
        (lambda () (= (buffer-size buf) (- len -7 2))))
       (emacs-collab-test--settle conn "a.txt" buf))))
+
+(ert-deftest emacs-collab-test-bridge-acks-local-edits ()
+  (emacs-collab-test--with-session (conn dir)
+    (let* ((buf (emacs-collab-test--visit conn dir "a.txt"))
+           (d (with-current-buffer buf (emacs-collab--doc))))
+      (with-current-buffer buf
+        (dotimes (i 12)
+          (goto-char (point-min))
+          (insert (format "x%d " i))))
+      (should (= (length (emacs-collab-doc-pending d)) 12))
+      ;; Idle: the bridge acks, and the pending list empties.
+      (emacs-collab-test--wait (lambda () (null (emacs-collab-doc-pending d))) 5)
+      (emacs-collab-test--settle conn "a.txt" buf))))
+
+(ert-deftest emacs-collab-test-emacs-acks-remote-edits ()
+  (emacs-collab-test--with-session (conn dir)
+    (let* ((buf (emacs-collab-test--visit conn dir "a.txt"))
+           (len (buffer-size buf))
+           (d (with-current-buffer buf (emacs-collab--doc))))
+      (dotimes (i 6)
+        (emacs-collab--send conn (list :t "x-test-remote" :path "a.txt"
+                                       :op (vector "r" (+ len i)))))
+      (emacs-collab-test--wait (lambda () (= (emacs-collab-doc-seen d) 6)))
+      (should (= 6 (emacs-collab-test--bridge-pending conn "a.txt")))
+      ;; Idle timers never run in batch mode: fire ours by hand.
+      (should (timerp (emacs-collab-doc-ack-timer d)))
+      (timer-event-handler (emacs-collab-doc-ack-timer d))
+      (should-not (emacs-collab-doc-ack-timer d))
+      ;; Only our ack empties the bridge's pending list.
+      (emacs-collab-test--wait
+       (lambda () (= 0 (emacs-collab-test--bridge-pending conn "a.txt"))) 5)
+      (should (= (emacs-collab-doc-acked d) 6))
+      (emacs-collab-test--settle conn "a.txt" buf))))
+
+(ert-deftest emacs-collab-test-read-only-until-doc ()
+  (let (buf ro-at-ready)
+    (add-hook 'emacs-collab-ready-functions
+              (lambda (_c) (setq ro-at-ready (buffer-local-value 'buffer-read-only buf))))
+    (unwind-protect
+        (emacs-collab-test--with-session
+            (conn dir (setq buf (find-file-noselect (expand-file-name "a.txt" dir))))
+          (emacs-collab-test--wait (lambda () (emacs-collab-test--synced-p buf)))
+          ;; attached but no `doc' yet when `ready' hooks ran: read-only then
+          (should ro-at-ready)
+          (with-current-buffer buf
+            (should-not buffer-read-only)
+            (should-not emacs-collab--locked)
+            ;; A re-attach locks again until the new doc arrives.
+            (let ((d (emacs-collab--doc)))
+              (emacs-collab--reattach conn d)
+              (should buffer-read-only)
+              (should-error (insert "x") :type 'buffer-read-only)
+              (emacs-collab-test--wait (lambda () (emacs-collab-doc-synced d)))
+              (should-not buffer-read-only)
+              (insert "x")
+              (emacs-collab-test--settle conn "a.txt" buf))))
+      (setq emacs-collab-ready-functions nil))))
+
+(ert-deftest emacs-collab-test-read-only-preserved ()
+  (let (buf)
+    (emacs-collab-test--with-session
+        (conn dir (setq buf (find-file-noselect (expand-file-name "a.txt" dir))))
+      (emacs-collab-test--wait (lambda () (emacs-collab-test--synced-p buf)))
+      (with-current-buffer buf
+        (setq buffer-read-only t)
+        (emacs-collab--reattach conn (emacs-collab--doc))
+        (should buffer-read-only)
+        (emacs-collab-test--wait (lambda () (emacs-collab-doc-synced (emacs-collab--doc))))
+        ;; The user's own read-only state survives the lock/unlock.
+        (should buffer-read-only)))))
 
 (ert-deftest emacs-collab-test-point-and-markers ()
   (emacs-collab-test--with-session (conn dir)

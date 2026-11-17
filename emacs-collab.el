@@ -49,6 +49,10 @@
   "Client name sent in `hello'."
   :type 'string)
 
+(defcustom emacs-collab-ack-idle-delay 0.5
+  "Seconds of idle time before remote edits are acknowledged to the bridge."
+  :type 'number)
+
 (defcustom emacs-collab-replace-timeout 1.0
   "Max seconds `replace-buffer-contents' may spend on a `doc' update."
   :type 'number)
@@ -80,7 +84,7 @@ or nil to give up.")
 
 (cl-defstruct (emacs-collab-doc (:constructor emacs-collab--make-doc)
                                 (:copier nil))
-  path buffer (sent 0) (seen 0) pending synced dirty)
+  path buffer (sent 0) (seen 0) pending synced dirty (acked 0) ack-timer)
 
 (cl-defstruct (emacs-collab-peer (:constructor emacs-collab--make-peer)
                                  (:copier nil))
@@ -99,9 +103,13 @@ or nil to give up.")
 (defvar-local emacs-collab--known-size nil
   "Buffer size after the last change we tracked.")
 (defvar-local emacs-collab--last-cursor nil "Last (POS . MARK) sent.")
+(defvar-local emacs-collab--locked nil
+  "Non-nil while we hold the buffer read-only, awaiting the bridge's `doc'.
+Then the value is (OLD) where OLD is the previous `buffer-read-only'.")
 
 (dolist (v '(emacs-collab-mode emacs-collab--conn emacs-collab--path
-             emacs-collab--known-size emacs-collab--last-cursor))
+             emacs-collab--known-size emacs-collab--last-cursor
+             emacs-collab--locked))
   (put v 'permanent-local t))
 
 ;;; Logging
@@ -240,6 +248,7 @@ non-nil, as `open.credentials'.  Return the connection."
     ("ready" (emacs-collab--handle-ready conn msg))
     ("doc" (emacs-collab--handle-doc conn msg))
     ("remote" (emacs-collab--handle-remote conn msg))
+    ("ack" (emacs-collab--handle-ack conn msg))
     ("peer" (emacs-collab--handle-peer conn msg))
     ("peer_left" (emacs-collab--handle-peer-left conn msg))
     ("file_event" (emacs-collab--handle-file-event conn msg))
@@ -337,7 +346,21 @@ non-nil, as `open.credentials'.  Return the connection."
       (add-hook 'after-change-functions #'emacs-collab--after-change nil t)
       (add-hook 'kill-buffer-hook #'emacs-collab--kill-hook nil t)
       (add-hook 'post-command-hook #'emacs-collab--post-command nil t)
+      (emacs-collab--lock)
       (emacs-collab--send conn (list :t "attach" :path path)))))
+
+(defun emacs-collab--lock ()
+  "Make the current buffer read-only until the bridge's `doc' arrives.
+No edit can then be made that the `doc' reset would have to discard."
+  (unless emacs-collab--locked
+    (setq emacs-collab--locked (list buffer-read-only)
+          buffer-read-only t)))
+
+(defun emacs-collab--unlock ()
+  "Restore the `buffer-read-only' value from before `emacs-collab--lock'."
+  (when emacs-collab--locked
+    (setq buffer-read-only (car emacs-collab--locked)
+          emacs-collab--locked nil)))
 
 (dolist (f '(emacs-collab--before-change emacs-collab--after-change
              emacs-collab--kill-hook emacs-collab--post-command))
@@ -348,7 +371,10 @@ non-nil, as `open.credentials'.  Return the connection."
   (remove-hook 'after-change-functions #'emacs-collab--after-change t)
   (remove-hook 'kill-buffer-hook #'emacs-collab--kill-hook t)
   (remove-hook 'post-command-hook #'emacs-collab--post-command t)
+  (emacs-collab--unlock)
   (when (and emacs-collab--conn emacs-collab--path)
+    (when-let* ((d (gethash emacs-collab--path (emacs-collab-conn-docs emacs-collab--conn))))
+      (emacs-collab--cancel-ack d))
     (when (gethash emacs-collab--path (emacs-collab-conn-docs emacs-collab--conn))
       (remhash emacs-collab--path (emacs-collab-conn-docs emacs-collab--conn))
       (emacs-collab--send emacs-collab--conn
@@ -369,7 +395,11 @@ non-nil, as `open.credentials'.  Return the connection."
   (setf (emacs-collab-doc-synced d) nil
         (emacs-collab-doc-sent d) 0
         (emacs-collab-doc-seen d) 0
-        (emacs-collab-doc-pending d) nil)
+        (emacs-collab-doc-pending d) nil
+        (emacs-collab-doc-acked d) 0)
+  (emacs-collab--cancel-ack d)
+  (when (buffer-live-p (emacs-collab-doc-buffer d))
+    (with-current-buffer (emacs-collab-doc-buffer d) (emacs-collab--lock)))
   (emacs-collab--send conn (list :t "attach" :path (emacs-collab-doc-path d))))
 
 (defun emacs-collab--resync (conn d why)
@@ -415,8 +445,11 @@ non-nil, as `open.credentials'.  Return the connection."
         (setf (emacs-collab-doc-sent d) 0
               (emacs-collab-doc-seen d) 0
               (emacs-collab-doc-pending d) nil
+              (emacs-collab-doc-acked d) 0
               (emacs-collab-doc-dirty d) nil
               (emacs-collab-doc-synced d) t)
+        (emacs-collab--cancel-ack d)
+        (emacs-collab--unlock)
         (setq emacs-collab--known-size (buffer-size)
               emacs-collab--before nil
               emacs-collab--last-cursor nil)
@@ -459,6 +492,9 @@ non-nil, as `open.credentials'.  Return the connection."
                   (emacs-collab--send-edit conn d op)))))))))))
 
 (defun emacs-collab--send-edit (conn d op)
+  ;; The edit's `seen' acknowledges everything applied so far.
+  (emacs-collab--cancel-ack d)
+  (setf (emacs-collab-doc-acked d) (emacs-collab-doc-seen d))
   (let ((seq (cl-incf (emacs-collab-doc-sent d))))
     (setf (emacs-collab-doc-pending d)
           (nconc (emacs-collab-doc-pending d) (list (cons seq op))))
@@ -516,8 +552,44 @@ non-nil, as `open.credentials'.  Return the connection."
                          (emacs-collab-ot-base-length op) (buffer-size)))
                 (setf (emacs-collab-doc-pending d) new)
                 (emacs-collab--apply-op op)
-                (setf (emacs-collab-doc-seen d) seq)))
+                (setf (emacs-collab-doc-seen d) seq)
+                (emacs-collab--schedule-ack conn d)))
           (error (emacs-collab--resync conn d (error-message-string err))))))))
+
+;;; Acknowledgements
+
+(defun emacs-collab--cancel-ack (d)
+  (when (timerp (emacs-collab-doc-ack-timer d))
+    (cancel-timer (emacs-collab-doc-ack-timer d)))
+  (setf (emacs-collab-doc-ack-timer d) nil))
+
+(defun emacs-collab--schedule-ack (conn d)
+  "Acknowledge the bridge's edits once idle, unless we send an edit first."
+  (unless (emacs-collab-doc-ack-timer d)
+    (setf (emacs-collab-doc-ack-timer d)
+          (run-with-idle-timer emacs-collab-ack-idle-delay nil
+                               #'emacs-collab--ack-timer conn d))))
+
+(defun emacs-collab--ack-timer (conn d)
+  (setf (emacs-collab-doc-ack-timer d) nil)
+  (when (and (emacs-collab-doc-synced d)
+             (eq d (gethash (emacs-collab-doc-path d) (emacs-collab-conn-docs conn)))
+             (> (emacs-collab-doc-seen d) (emacs-collab-doc-acked d)))
+    (setf (emacs-collab-doc-acked d) (emacs-collab-doc-seen d))
+    (emacs-collab--send conn (list :t "ack" :path (emacs-collab-doc-path d)
+                                   :seen (emacs-collab-doc-seen d)))))
+
+(defun emacs-collab--handle-ack (conn msg)
+  "The bridge has applied our edits up to `seen': forget them."
+  (let* ((path (alist-get 'path msg))
+         (d (gethash path (emacs-collab-conn-docs conn)))
+         (s (alist-get 'seen msg)))
+    (when (and d (emacs-collab-doc-synced d))
+      (if (and (integerp s) (<= 0 s (emacs-collab-doc-sent d)))
+          (setf (emacs-collab-doc-pending d)
+                (cl-remove-if (lambda (p) (<= (car p) s))
+                              (emacs-collab-doc-pending d)))
+        (emacs-collab--resync conn d (format "ack.seen %s out of range" s))))))
 
 ;;; Cursors and peers
 
