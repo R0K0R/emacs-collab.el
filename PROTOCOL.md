@@ -88,6 +88,13 @@ for edits that came from the service.
    the bridge's own, so there it is `(p.op, op) = transform(p.op, op)`.
 3. Apply `op` locally and set `seen = seq`.
 
+**Acknowledging.** Without a reply, a side's `pending` would only shrink when
+the other side edits too. So either side may send `{"t":"ack","path":P,"seen":seen}`
+at any time; the receiver drops its `pending` entries numbered `<= seen`,
+exactly as in step 1. Each side SHOULD acknowledge the other's edits within
+about a second of applying them, when it has sent nothing for that document
+since. It can batch: one `ack` covers everything up to `seen`.
+
 `seq` values from one side are consecutive (1, 2, 3, …) per document and arrive
 in order, since stdio is an ordered stream. A gap or a base-length mismatch is a
 protocol error:
@@ -105,9 +112,10 @@ protocol error:
 |---|---|
 | `hello {client, version:0}` | First message. |
 | `open {params, credentials?}` | Open a project. `params` is bridge-specific (server URL, project id, room, …). `credentials` comes from Emacs's auth-source; the bridge must not read secrets from disk on its own. |
-| `attach {path}` | Emacs has opened `path` and wants to edit it. This (re)starts that document's sync state. |
+| `attach {path}` | Emacs has opened `path` and wants to edit it. This (re)starts that document's sync state. Until the `doc` reply arrives, Emacs keeps the buffer read-only, so no edit is made that the reset would have to discard. |
 | `detach {path}` | Emacs closed the buffer. |
 | `edit {path, seq, seen, op}` | A local edit (section 4). |
+| `ack {path, seen}` | Acknowledges the bridge's edits up to `seen` (section 4). |
 | `cursor {path, pos, mark?}` | Emacs's point (and mark, if the region is active), sent debounced. |
 | `file {op:"create"\|"rename"\|"delete", path, to?, text?}` | Change the file tree. |
 | `chat {text}` | A chat message, when the bridge has the `chat` capability. |
@@ -121,6 +129,7 @@ protocol error:
 | `ready {project:{name, root, main?, files:[…]}, self:{id, name, color}}` | The project is open. `root` is an absolute local directory: the **mirror**, holding every file of the project (section 6). `files` lists the project-relative paths. |
 | `doc {path, text, seen}` | Reply to `attach`: the full current text. In v0 `seen` is always `0`. Both sides reset this document's state (`sent` = 0, `seen` = 0, `pending` empty): Emacs after replacing its buffer's text when it differs, the bridge when it sends `doc`. |
 | `remote {path, seq, seen, op}` | An edit from the service (section 4). |
+| `ack {path, seen}` | Acknowledges Emacs's edits up to `seen` (section 4). |
 | `peer {id, name, color, path?, pos?, mark?}` | Another participant appeared, or moved. |
 | `peer_left {id}` | That participant left. |
 | `file_event {op:"create"\|"rename"\|"delete"\|"change", path, to?}` | The tree changed on the service. For unattached files the bridge has already updated the mirror. |
@@ -166,5 +175,8 @@ only when started with `--test`:
   - Otherwise it updates the mirror file and sends `file_event {op:"change"}`.
 - `x-test-text {path}` (Emacs → bridge), answered by `x-test-text {path, text}`:
   the bridge's current text of `path`.
+- `x-test-pending {path}` (Emacs → bridge), answered by
+  `x-test-pending {path, count}`: how many of the bridge's sent edits for `path`
+  are still in its `pending` list (0 for an unattached path).
 - `x-test-peer {id, name, color, path?, pos?}` (Emacs → bridge): make a peer
   appear, as a `peer` message.

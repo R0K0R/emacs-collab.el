@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -17,6 +18,8 @@ import ot  # noqa: E402
 CAPABILITIES = ["cursors", "chat", "files"]
 SELF = {"id": "loopback-self", "name": "loopback", "color": "#3366cc"}
 TEST = False
+ACK_DELAY = 0.3       # seconds of quiet after an Emacs edit before acking it
+LOCK = threading.RLock()   # guards stdout and all bridge state
 
 
 def log(*a):
@@ -24,8 +27,9 @@ def log(*a):
 
 
 def send(msg):
-    sys.stdout.write(json.dumps(msg, ensure_ascii=False, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
+    with LOCK:
+        sys.stdout.write(json.dumps(msg, ensure_ascii=False, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
 
 
 def send_error(code, message, path=None, fatal=False):
@@ -48,6 +52,8 @@ class Doc:
         self.sent = 0         # bridge edits sent
         self.seen = 0         # Emacs edits applied
         self.pending = []     # [(seq, op)] bridge edits Emacs has not confirmed
+        self.acked = 0        # highest Emacs edit we have acknowledged
+        self.ack_due = None   # monotonic time at which to send an ack
 
 
 class Bridge:
@@ -181,6 +187,32 @@ class Bridge:
             self.desync(path, d, str(e))
             return
         d.pending, d.text, d.seen = pending, text, seq
+        d.ack_due = time.monotonic() + ACK_DELAY
+
+    def on_ack(self, m):
+        path = m.get("path")
+        d = self.docs.get(path)
+        if d is None or not d.attached:
+            self.desync(path, None, "ack for a document that is not attached")
+            return
+        if d.broken:
+            return
+        s = m.get("seen")
+        if not isinstance(s, int) or isinstance(s, bool) or not (0 <= s <= d.sent):
+            self.desync(path, d, "ack.seen %r out of range (sent %d)" % (s, d.sent))
+            return
+        d.pending = [(q, p) for (q, p) in d.pending if q > s]
+
+    def flush_acks(self):
+        """Send the acks that are due (called from the timer thread)."""
+        now = time.monotonic()
+        for path, d in list(self.docs.items()):
+            if d.ack_due is None or d.ack_due > now:
+                continue
+            d.ack_due = None
+            if d.attached and not d.broken and d.seen > d.acked:
+                d.acked = d.seen
+                send({"t": "ack", "path": path, "seen": d.seen})
 
     def on_cursor(self, m):
         pass
@@ -234,6 +266,8 @@ class Bridge:
         if d.attached:
             d.sent += 1
             d.pending.append((d.sent, op))
+            d.acked = d.seen      # this remote's `seen` acknowledges them
+            d.ack_due = None
             send({"t": "remote", "path": path, "seq": d.sent, "seen": d.seen,
                   "op": op})
         else:
@@ -246,6 +280,12 @@ class Bridge:
             send({"t": "x-test-text", "path": path, "text": self.get_doc(path).text})
         except (OSError, ValueError, UnicodeDecodeError) as e:
             send_error("test_failed", str(e), path if isinstance(path, str) else None)
+
+    def on_x_test_pending(self, m):
+        path = m.get("path")
+        d = self.docs.get(path)
+        send({"t": "x-test-pending", "path": path,
+              "count": len(d.pending) if d is not None else 0})
 
     def on_x_test_peer(self, m):
         out = {"t": "peer"}
@@ -276,6 +316,17 @@ def main():
     sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8")
     b = Bridge()
+
+    def ticker():
+        while True:
+            time.sleep(0.05)
+            with LOCK:
+                try:
+                    b.flush_acks()
+                except Exception as e:
+                    log("ack error:", repr(e))
+
+    threading.Thread(target=ticker, daemon=True).start()
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -287,13 +338,14 @@ def main():
             continue
         if not isinstance(m, dict):
             continue
-        try:
-            b.handle(m)
-        except SystemExit:
-            raise
-        except Exception as e:  # keep the bridge alive on handler bugs
-            log("handler error:", repr(e))
-            send_error("internal", repr(e), m.get("path") if isinstance(m.get("path"), str) else None)
+        with LOCK:
+            try:
+                b.handle(m)
+            except SystemExit:
+                raise
+            except Exception as e:  # keep the bridge alive on handler bugs
+                log("handler error:", repr(e))
+                send_error("internal", repr(e), m.get("path") if isinstance(m.get("path"), str) else None)
     log("stdin closed; exiting")
 
 

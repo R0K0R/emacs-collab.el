@@ -95,6 +95,12 @@ class EDoc:
         self.seen = m["seq"]
 
 
+    def on_ack(self, m):
+        s = m["seen"]
+        check(isinstance(s, int) and 0 <= s <= self.sent, "ack.seen %s out of range" % s)
+        self.pending = [(q, p) for (q, p) in self.pending if q > s]
+
+
 class Client:
     def __init__(self, cmdline, params_tpl, rounds_seed=0):
         self.tmp = tempfile.mkdtemp(prefix="emacs-collab-conf-")
@@ -139,6 +145,10 @@ class Client:
             d = self.docs.get(m["path"])
             check(d is not None, "remote for unattached path %s" % m["path"])
             d.on_remote(m)
+        elif m.get("t") == "ack":
+            d = self.docs.get(m["path"])
+            check(d is not None, "ack for unattached path %s" % m["path"])
+            d.on_ack(m)
         return m
 
     def wait(self, pred, what, timeout=TIMEOUT):
@@ -277,6 +287,52 @@ def remote_edits_only(c, ctx):
     check(d.text == bt, "emacs text != expected after remotes")
     check(d.seen == 20, "emacs applied %d remotes, expected 20" % d.seen)
     check(d.pending == [], "unexpected pending")
+
+
+@scenario
+def bridge_acks_emacs_edits(c, ctx):
+    c.start()
+    d, _ = c.attach("a.txt")
+    rng = random.Random(3)
+    for _ in range(30):
+        d.local_edit(c, rand_op(rng, d.text))
+    check(len(d.pending) == 30, "edits should be pending before any ack")
+    # a quiet period: the bridge SHOULD ack within about a second
+    deadline = time.time() + 3.0
+    while d.pending and time.time() < deadline:
+        try:
+            c.next_msg(max(0.05, deadline - time.time()))
+        except Fail:
+            break
+    check(d.pending == [], "bridge did not ack: %d edits still pending" % len(d.pending))
+    check(c.bridge_text("a.txt") == d.text, "bridge text != emacs text")
+
+
+@scenario
+def bridge_accepts_ack(c, ctx):
+    c.start()
+    d, _ = c.attach("a.txt")
+    rng = random.Random(4)
+    bt = d.text
+    for _ in range(5):
+        op = rand_op(rng, bt)
+        bt = ot.apply(bt, op)
+        c.send({"t": "x-test-remote", "path": "a.txt", "op": op})
+    c.bridge_text("a.txt")
+    check(d.seen == 5 and d.text == bt, "remotes not applied")
+
+    def count():
+        c.send({"t": "x-test-pending", "path": "a.txt"})
+        return c.wait_t("x-test-pending", path="a.txt")["count"]
+    check(count() == 5, "bridge pending should be 5 before the ack")
+    c.send({"t": "ack", "path": "a.txt", "seen": 3})
+    check(count() == 2, "ack seen=3 should leave 2 pending")
+    c.send({"t": "ack", "path": "a.txt", "seen": 5})
+    check(count() == 0, "ack seen=5 should empty pending")
+    check(not any(m.get("t") == "error" for m in c.other), "bridge reported an error")
+    # sync still works afterwards
+    d.local_edit(c, [len(d.text), "after ack\n"])
+    check(c.bridge_text("a.txt") == d.text, "bridge text != emacs text after ack")
 
 
 def concurrent_round(c, seed, nonbmp_seed_text=True):
