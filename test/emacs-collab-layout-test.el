@@ -231,6 +231,14 @@
 
 ;;; With the loopback bridge
 
+(ert-deftest emacs-collab-layout-test-attach-predicate ()
+  (let ((emacs-collab-attach-predicate (lambda (_c path) (not (string= path "a.txt")))))
+    (emacs-collab-test--with-session (conn dir)
+      (let ((skipped (find-file-noselect (expand-file-name "a.txt" dir)))
+            (attached (find-file-noselect (expand-file-name "main.tex" dir))))
+        (emacs-collab-test--wait (lambda () (emacs-collab-test--synced-p attached)))
+        (should-not (buffer-local-value 'emacs-collab-mode skipped))))))
+
 (ert-deftest emacs-collab-layout-test-for-connection-and-quit ()
   (emacs-collab-test--with-session (conn dir)
     (let* ((emacs-collab-layout-state-file (expand-file-name "st.eld" dir))

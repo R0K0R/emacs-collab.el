@@ -69,6 +69,12 @@ MESSAGE is an alist with symbol keys.  Runs before normal handling.")
 It should return a credentials alist, which is sent in a new `open',
 or nil to give up.")
 
+(defvar emacs-collab-attach-predicate nil
+  "When non-nil, a function called as (CONN PATH) before a buffer is auto-attached.
+PATH is relative to the project root.  Return nil to leave the buffer
+alone (build output, binary files).  `emacs-collab-mode' can still be
+enabled by hand.")
+
 (defvar emacs-collab-peer-functions nil
   "Abnormal hook run with (CONNECTION PEER) after a peer changed.")
 
@@ -306,9 +312,11 @@ non-nil, as `open.credentials'.  Return the connection."
 
 (defun emacs-collab--maybe-attach (conn)
   "Enable `emacs-collab-mode' in the current buffer if it is under CONN's root."
-  (when (and buffer-file-name (not emacs-collab-mode)
-             (emacs-collab-conn-ready conn)
-             (emacs-collab--path-for conn buffer-file-name))
+  (when-let* (((and buffer-file-name (not emacs-collab-mode)
+                    (emacs-collab-conn-ready conn)))
+              (path (emacs-collab--path-for conn buffer-file-name))
+              ((or (null emacs-collab-attach-predicate)
+                   (funcall emacs-collab-attach-predicate conn path))))
     (setq emacs-collab--conn conn)
     (emacs-collab-mode 1)))
 
