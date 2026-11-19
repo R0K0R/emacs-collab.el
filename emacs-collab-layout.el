@@ -63,8 +63,9 @@
   :type 'file)
 
 (defcustom emacs-collab-layout-default-sizes
-  '(:tree-width 30 :preview-width 0.35 :pdf-width 0.35 :terminal-height 0.25)
-  "Default pane sizes.  A float is a fraction of the frame, an integer cells."
+  '(:tree-width nil :preview-width 0.35 :pdf-width 0.35 :terminal-height 0.25)
+  "Default pane sizes.  A float is a fraction of the frame, an integer cells.
+A nil :tree-width is treemacs's own `treemacs-width'."
   :type 'plist)
 
 (defcustom emacs-collab-layout-default-args nil
@@ -484,7 +485,9 @@ connection to close at quit (default: the one rooted at ROOT)."
     (when (and tree (emacs-collab-layout--have 'treemacs) (fboundp 'treemacs))
       (condition-case err
           (let ((treemacs-width (emacs-collab-layout--clamp
-                                 (plist-get sizes :tree-width) (frame-width))))
+                                 (or (plist-get sizes :tree-width)
+                                     (bound-and-true-p treemacs-width) 35)
+                                 (frame-width))))
             ;; Pinning the root displays treemacs itself; calling `treemacs'
             ;; first would prompt for a project when its workspace is empty.
             (emacs-collab-layout--treemacs-show-root root)
