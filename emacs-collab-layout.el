@@ -595,6 +595,17 @@ An idle shell is just a prompt; Emacs would ask about it anyway."
 (declare-function get-buffer-xwidgets "xwidget.c" (buffer))
 (declare-function set-xwidget-query-on-exit-flag "xwidget.c" (xwidget flag))
 (declare-function +doom-dashboard/open "doom-dashboard")
+(declare-function +dashboard/open "doom-dashboard")
+(declare-function doom-fallback-buffer "doom-lib")
+
+(defun emacs-collab-layout--show-home ()
+  "Show the dashboard after a quit: Doom's splash, else `*scratch*'.
+Doom renamed its dashboard's commands from `+doom-dashboard-' to
+`+dashboard-'; both are tried, then Doom's fallback buffer (*doom*)."
+  (cond ((fboundp '+dashboard/open) (+dashboard/open (selected-frame)))
+        ((fboundp '+doom-dashboard/open) (+doom-dashboard/open (selected-frame)))
+        ((fboundp 'doom-fallback-buffer) (switch-to-buffer (doom-fallback-buffer)))
+        (t (switch-to-buffer (get-scratch-buffer-create)))))
 
 ;;;###autoload
 (defun emacs-collab-layout-quit (&optional root no-close)
@@ -676,9 +687,7 @@ With NO-CLOSE (used internally when rebuilding), keep the windows."
         (when (equal (window-parameter w 'emacs-collab-layout-root) root)
           (set-window-parameter w 'emacs-collab-role nil)
           (set-window-parameter w 'emacs-collab-layout-root nil)))
-      (if (fboundp '+doom-dashboard/open)
-          (+doom-dashboard/open (selected-frame))
-        (switch-to-buffer (get-scratch-buffer-create)))
+      (emacs-collab-layout--show-home)
       (message "Workspace closed: %s" (abbreviate-file-name root)))))
 
 ;; The role marks must survive a workspace switch: Doom's workspaces (and
