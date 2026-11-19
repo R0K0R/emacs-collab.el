@@ -207,6 +207,18 @@
       (should (= (nth 3 (window-edges pv)) (nth 3 (window-edges term))))
       (should (<= (nth 2 (window-edges term)) (nth 0 (window-edges pv)))))))
 
+;; The "No PDF yet" placeholder goes at quit, like everything else the
+;; layout made.
+(ert-deftest emacs-collab-layout-test-quit-kills-pdf-placeholder ()
+  (emacs-collab-layout-test--with-project (dir)
+    (emacs-collab-layout-build :root dir :main-file "main.tex"
+                               :pdf (expand-file-name "missing.pdf" dir))
+    (let ((ph (get-buffer (format "*emacs-collab-pdf: %s*"
+                                  (file-name-nondirectory (directory-file-name dir))))))
+      (should (buffer-live-p ph))
+      (emacs-collab-layout-quit dir)
+      (should-not (buffer-live-p ph)))))
+
 (ert-deftest emacs-collab-layout-test-quit-offers-save ()
   (emacs-collab-layout-test--with-project (dir)
     (emacs-collab-layout-build :root dir :main-file "main.tex")

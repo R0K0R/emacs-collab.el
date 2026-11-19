@@ -536,7 +536,8 @@ connection to close at quit (default: the one rooted at ROOT)."
              (pw (ignore-errors (split-window editor (- w) 'right))))
         (when pw
           (emacs-collab-layout--mark pw 'pdf root)
-          (set-window-buffer pw (emacs-collab-layout--pdf-placeholder root pdf-file))
+          (set-window-buffer pw (emacs-collab-layout-register-buffer
+                                 (emacs-collab-layout--pdf-placeholder root pdf-file) root))
           (set-window-dedicated-p pw nil)
           (emacs-collab-layout-show-pdf pdf-file root))))
     (when (window-live-p editor) (select-window editor))
