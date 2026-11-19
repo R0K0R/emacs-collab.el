@@ -191,6 +191,22 @@
       (should-not (buffer-live-p page))
       (should-not (buffer-live-p placeholder)))))
 
+;; As the original Noteworthy layout: the preview is a full-height column
+;; at the right; the terminal runs only under the editor and the pdf.
+(ert-deftest emacs-collab-layout-test-preview-full-height ()
+  (emacs-collab-layout-test--with-project (dir)
+    (emacs-collab-layout-build
+     :root dir :main-file "main.tex" :terminal t
+     :pdf (expand-file-name "main.tex" dir)
+     :preview (lambda (_) (get-buffer-create "*fake-preview*")))
+    (let* ((pv (emacs-collab-layout-window 'preview))
+           (term (emacs-collab-layout-window 'terminal))
+           (ed (emacs-collab-layout-window 'editor)))
+      (should (and pv term ed (emacs-collab-layout-window 'pdf)))
+      (should (= (nth 1 (window-edges pv)) (nth 1 (window-edges ed))))
+      (should (= (nth 3 (window-edges pv)) (nth 3 (window-edges term))))
+      (should (<= (nth 2 (window-edges term)) (nth 0 (window-edges pv)))))))
+
 (ert-deftest emacs-collab-layout-test-quit-offers-save ()
   (emacs-collab-layout-test--with-project (dir)
     (emacs-collab-layout-build :root dir :main-file "main.tex")

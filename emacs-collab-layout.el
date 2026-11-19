@@ -19,9 +19,9 @@
 ;;
 ;;   +------+----------------------+---------+---------+
 ;;   | tree |        editor        |   pdf   | preview |
-;;   |      +----------------------+---------+---------+
-;;   |      |                terminal                  |
-;;   +------+------------------------------------------+
+;;   |      +----------------------+---------+         |
+;;   |      |       terminal                 |         |
+;;   +------+--------------------------------+---------+
 ;;
 ;;   (emacs-collab-layout-build :root "~/proj/" :main-file "main.tex"
 ;;                              :tree t :terminal t
@@ -508,12 +508,14 @@ connection to close at quit (default: the one rooted at ROOT)."
             (setf (emacs-collab-layout-project-terminal p) buf)
             (with-current-buffer buf (setq emacs-collab-layout--buffer-root root)))
           (emacs-collab-layout--mark tw 'terminal root))))
-    ;; Preview (rightmost: split first, the pdf pane then goes between).
+    ;; Preview: a full-height column at the right, beside editor and
+    ;; terminal both (split first, the pdf pane then goes between).
     (when (emacs-collab-layout--preview-available-p preview)
       (select-window editor)
-      (let* ((w (emacs-collab-layout--clamp (plist-get sizes :preview-width)
-                                            (window-total-width editor)))
-             (vw (ignore-errors (split-window editor (- w) 'right))))
+      (let* ((main (window-main-window))
+             (w (emacs-collab-layout--clamp (plist-get sizes :preview-width)
+                                            (window-total-width main)))
+             (vw (ignore-errors (split-window main (- w) 'right))))
         (when vw
           (emacs-collab-layout--mark vw 'preview root)
           (select-window vw)
