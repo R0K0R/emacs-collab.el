@@ -243,6 +243,7 @@ Keys: :tree-width :preview-width :pdf-width :terminal-height.")
 (declare-function treemacs "treemacs")
 (declare-function treemacs-add-and-display-current-project-exclusively "treemacs")
 (declare-function treemacs-get-local-window "treemacs")
+(declare-function treemacs-get-local-buffer "treemacs")
 (defvar treemacs-width)
 
 (defun emacs-collab-layout--treemacs-show-root (dir)
@@ -676,8 +677,14 @@ With NO-CLOSE (used internally when rebuilding), keep the windows."
     (setq emacs-collab-layout--projects (delq p emacs-collab-layout--projects))
     (unless no-close
       ;; 6. The layout.
+      ;; The tree: its window and its buffer, which would otherwise come
+      ;; back still pinned to this project the next time treemacs opens.
       (when-let* ((w (and (fboundp 'treemacs-get-local-window) (treemacs-get-local-window))))
-        (ignore-errors (delete-window w)))
+        (let ((buf (window-buffer w)))
+          (ignore-errors (delete-window w))
+          (when (buffer-live-p buf) (ignore-errors (kill-buffer buf)))))
+      (when-let* ((buf (and (fboundp 'treemacs-get-local-buffer) (treemacs-get-local-buffer))))
+        (ignore-errors (kill-buffer buf)))
       (when (equal emacs-collab-layout-last-root root)
         (setq emacs-collab-layout-last-root nil))
       (unless emacs-collab-layout--projects
