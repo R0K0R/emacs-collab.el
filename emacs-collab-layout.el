@@ -399,6 +399,7 @@ does not exist yet or there is no pdf pane."
          (root (emacs-collab-layout-project-root p))
          (display-buffer-overriding-action '(display-buffer-same-window))
          (before (buffer-list))
+         (orig (window-buffer win))
          buf)
     (setq buf
           (pcase spec
@@ -411,8 +412,16 @@ does not exist yet or there is no pdf pane."
                  (typst-preview-start t)))
              (current-buffer))
             (`(pdf ,file . ,_) (emacs-collab-layout--visit-pdf file))))
-    (when (and (bufferp buf) (buffer-live-p buf))
-      (set-window-buffer win buf))
+    (cond
+     ;; The spec filled the pane itself, maybe dedicating it -- a preview
+     ;; server can come up and open its page before the spec returns.  Keep
+     ;; that; what the spec returned (a placeholder, say) is killed at quit.
+     ((and (window-live-p win) (not (eq (window-buffer win) orig)))
+      (when (and (bufferp buf) (buffer-live-p buf))
+        (cl-pushnew buf (emacs-collab-layout-project-preview p)))
+      (setq buf (window-buffer win)))
+     ((and (bufferp buf) (buffer-live-p buf))
+      (set-window-buffer win buf)))
     ;; Whatever the preview started: kill it at quit.
     (dolist (b (buffer-list))
       (unless (memq b before)

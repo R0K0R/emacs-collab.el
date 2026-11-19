@@ -173,6 +173,24 @@
     (should-not (emacs-collab-layout-window 'preview))
     (should (emacs-collab-layout-window 'editor))))
 
+;; A preview server can come up and open its page in the pane, dedicating
+;; it, before the spec returns its placeholder: the page must stay.
+(ert-deftest emacs-collab-layout-test-preview-filled-by-spec ()
+  (emacs-collab-layout-test--with-project (dir)
+    (let ((page (get-buffer-create "*fake-page*"))
+          (placeholder (get-buffer-create "*fake-placeholder*")))
+      (emacs-collab-layout-build
+       :root dir :main-file "main.tex"
+       :preview (lambda (_root)
+                  (set-window-buffer (selected-window) page)
+                  (set-window-dedicated-p (selected-window) t)
+                  placeholder))
+      (should (emacs-collab-layout-window 'preview))
+      (should (eq (window-buffer (emacs-collab-layout-window 'preview)) page))
+      (emacs-collab-layout-quit dir)
+      (should-not (buffer-live-p page))
+      (should-not (buffer-live-p placeholder)))))
+
 (ert-deftest emacs-collab-layout-test-quit-offers-save ()
   (emacs-collab-layout-test--with-project (dir)
     (emacs-collab-layout-build :root dir :main-file "main.tex")
